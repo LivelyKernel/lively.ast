@@ -12,7 +12,7 @@
 
   var globalInterfaceSpec = [
     {action: "installMethods", target: "Array",              sources: ["arr"],    methods: ["from","genN","range","withN"]},
-    {action: "installMethods", target: "Array.prototype",    sources: ["arr"],    methods: ["all","any","batchify","clear","clone","collect","compact","delimWith","detect","doAndContinue","each","equals","filterByKey","findAll","first","flatten","forEachShowingProgress","grep","groupBy","groupByKey","histogram","include","inject","intersect","invoke","last","mapAsync", "mapAsyncSeries", "mask","max","min","mutableCompact","nestedDelay","partition","pluck","pushAll","pushAllAt","pushAt","pushIfNotIncluded","reMatches","reject","rejectByKey","remove","removeAt","replaceAt","rotate","shuffle","size","sortBy","sortByKey","sum","swap","toArray","toTuples","union","uniq","uniqBy","without","withoutAll","zip"], alias: [["select", "filter"],["find","detect"]]},
+    {action: "installMethods", target: "Array.prototype",    sources: ["arr"],    methods: ["all","any","batchify","clear","clone","collect","compact","delimWith","detect","doAndContinue","each","equals","filterByKey","findAll","first","flatten","forEachShowingProgress","grep","groupBy","groupByKey","histogram","include","inject","intersect","invoke","last","mapAsync", "mapAsyncSeries", "mask","max","min","mutableCompact","nestedDelay","partition","pluck","pushAll","pushAllAt","pushAt","pushIfNotIncluded","reMatches","reject","rejectByKey","remove","removeAt","replaceAt","rotate","shuffle","size","sortBy","sortByKey","sum","swap","toArray","toTuples","union","uniq","uniqBy","without","withoutAll","zip"], alias: [["select", "filter"]]},
     {action: "installMethods", target: "Date",               sources: ["date"],   methods: [/*"parse"*/]},
     {action: "installMethods", target: "Date.prototype",     sources: ["date"],   methods: ["equals","format","relativeTo"]},
     {action: "installMethods", target: "Function",           sources: ["fun"],    methods: ["fromString"]},
@@ -21,7 +21,7 @@
     {action: "installMethods", target: "Number.prototype",   sources: ["num"],    methods: ["detent","randomSmallerInteger","roundTo","toDegrees","toRadians"]},
     {action: "installMethods", target: "Object",             sources: ["obj"],    methods: ["addScript","clone","deepCopy","extend","inherit","isArray","isBoolean","isElement","isEmpty","isFunction","isNumber","isObject","isRegExp","isString","isUndefined","merge","mergePropertyInHierarchy","values","valuesInPropertyHierarchy"]},
     {action: "installMethods", target: "Object.prototype",   sources: ["obj"],    methods: []},
-    {action: "installMethods", target: "String.prototype",   sources: ["string"], methods: ["camelize","capitalize","digitValue","empty","endsWith","hashCode","include","pad","regExpEscape","startsWith","startsWithVowel","succ","times","toArray","toQueryParams","truncate"]},
+    {action: "installMethods", target: "String.prototype",   sources: ["string"], methods: ["camelize","capitalize","digitValue","empty","hashCode","include","pad","regExpEscape","startsWithVowel","succ","times","toArray","toQueryParams","truncate"]},
     {action: "installMethods", target: "Function.prototype", sources: ["klass"],  methods: ["create","addMethods","isSubclassOf","superclasses","categoryNameFor","remove"], alias: [["subclass", "create"]]},
 
     {action: "installObject", target: "Numbers",                source: "num",        methods: ["average","between","convertLength","humanReadableByteSize","median","normalRandom","parseLength","random","sort"]},
@@ -43,7 +43,7 @@
 
   var livelyLang = createLivelyLangObject();
   if (isNode) { module.exports = livelyLang; if (!Global.lively) return; }
-  
+
   livelyLang._prevLivelyGlobal = Global.lively;
   if (!Global.lively) Global.lively = {};
   if (!Global.lively.lang) Global.lively.lang = livelyLang;
@@ -181,8 +181,23 @@
     // We need to redefine Function.evalJS here b/c the original definition is
     // in a JS 'use strict' block. However, not all function sources we pass in
     // #evalJS from Lively adhere to the strictness rules. To allow those
-    // functions for now we define the creator again outside of a strictness block.
-    Function.evalJS = livelyLang.fun.evalJS = function(src) { return eval(src); }
+      // functions for now we define the creator again outside of a strictness block.
+
+    // rk 2016-05-22: !!! in order to not capture objects in the lexical scope of
+    // eval as they were defined while THIS files WAS loaded, we need to inject
+    // globals / context, i.e. local lively here might be != Global.lively!
+
+    Function.evalJS = livelyLang.fun.evalJS = function(src) {
+        var fixVars = ""
+            + "var Global = typeof System !== 'undefined' ? System.global :\n"
+            + "    typeof window !== 'undefined' ? window :\n"
+            + "    typeof global!=='undefined' ? global :\n"
+            + "    typeof self!=='undefined' ? self : this;\n";
+        if (Global.lively && Global.lively != lively)
+            fixVars += "var lively = Global.lively;\n";
+        return eval(fixVars + src);
+    }
+
     livelyLang.Path.type = livelyLang.PropertyPath;
     livelyLang.Path.prototype.serializeExpr = function () {
       // ignore-in-doc
@@ -312,6 +327,19 @@
             return object ? Object.keys(object).map(function (k) {
                 return object[k];
             }) : [];
+        },
+        select: function (obj, keys) {
+            var selected = {};
+            for (var i = 0; i < keys.length; i++)
+                selected[keys[i]] = obj[keys[i]];
+            return selected;
+        },
+        dissoc: function (object, keys) {
+            var result = {};
+            for (var name in object)
+                if (object.hasOwnProperty(name) && keys.indexOf(name) === -1)
+                    result[name] = object[name];
+            return result;
         },
         addScript: function (object, funcOrString, optName, optMapping) {
             var func = exports.fun.fromString(funcOrString);
@@ -1188,88 +1216,12 @@
 ;
 (function (exports) {
     'use strict';
-    var arrNative = exports.arrNative = {
-        sort: function (sortFunc) {
-            if (!sortFunc) {
-                sortFunc = function (x, y) {
-                    if (x < y)
-                        return -1;
-                    if (x > y)
-                        return 1;
-                    return 0;
-                };
-            }
-            var len = this.length, sorted = [];
-            for (var i = 0; i < this.length; i++) {
-                var inserted = false;
-                for (var j = 0; j < sorted.length; j++) {
-                    if (1 === sortFunc(sorted[j], this[i])) {
-                        inserted = true;
-                        sorted[j + 1] = sorted[j];
-                        sorted[j] = this[i];
-                        break;
-                    }
-                }
-                if (!inserted)
-                    sorted.push(this[i]);
-            }
-            return sorted;
-        },
-        filter: function (iterator, context) {
-            var results = [];
-            for (var i = 0; i < this.length; i++) {
-                if (!this.hasOwnProperty(i))
-                    continue;
-                var value = this[i];
-                if (iterator.call(context, value, i))
-                    results.push(value);
-            }
-            return results;
-        },
-        forEach: function (iterator, context) {
-            for (var i = 0, len = this.length; i < len; i++) {
-                iterator.call(context, this[i], i, this);
-            }
-        },
-        some: function (iterator, context) {
-            return this.detect(iterator, context) !== undefined;
-        },
-        every: function (iterator, context) {
-            var result = true;
-            for (var i = 0, len = this.length; i < len; i++) {
-                result = result && !!iterator.call(context, this[i], i);
-                if (!result)
-                    break;
-            }
-            return result;
-        },
-        map: function (iterator, context) {
-            var results = [];
-            this.forEach(function (value, index) {
-                results.push(iterator.call(context, value, index));
-            });
-            return results;
-        },
-        reduce: function (iterator, memo, context) {
-            var start = 0;
-            if (!arguments.hasOwnProperty(1)) {
-                start = 1;
-                memo = this[0];
-            }
-            for (var i = start; i < this.length; i++)
-                memo = iterator.call(context, memo, this[i], i, this);
-            return memo;
-        },
-        reduceRight: function (iterator, memo, context) {
-            var start = this.length - 1;
-            if (!arguments.hasOwnProperty(1)) {
-                start--;
-                memo = this[this.length - 1];
-            }
-            for (var i = start; i >= 0; i--)
-                memo = iterator.call(context, memo, this[i], i, this);
-            return memo;
-        }
+    var features = {
+        from: !!Array.from,
+        filter: !!Array.prototype.filter,
+        find: !!Array.prototype.find,
+        findIndex: !!Array.prototype.findIndex,
+        includes: !!Array.prototype.includes
     };
     var arr = exports.arr = {
         range: function (begin, end, step) {
@@ -1279,7 +1231,7 @@
                 result.push(i);
             return result;
         },
-        from: function (iterable) {
+        from: features.from ? Array.from : function (iterable) {
             if (!iterable)
                 return [];
             if (Array.isArray(iterable))
@@ -1306,13 +1258,24 @@
         filter: function (array, iterator, context) {
             return array.filter(iterator, context);
         },
-        detect: function (arr, iterator, context) {
+        detect: features.find ? function (arr, iterator, context) {
+            return arr.find(iterator, context);
+        } : function (arr, iterator, context) {
             for (var value, i = 0, len = arr.length; i < len; i++) {
                 value = arr[i];
                 if (iterator.call(context, value, i))
                     return value;
             }
             return undefined;
+        },
+        findIndex: features.findIndex ? function (arr, iterator, context) {
+            return arr.findIndex(iterator, context);
+        } : function (arr, iterator, context) {
+            var i = -1;
+            return arr.find(function (ea, j) {
+                i = j;
+                return iterator.call(ea, context);
+            }) ? i : -1;
         },
         filterByKey: function (arr, key) {
             return arr.filter(function (ea) {
@@ -1390,9 +1353,11 @@
             return array.forEach(iterator, context);
         },
         zip: function () {
-            var args = arr.from(arguments), array = args.shift(), iterator = typeof arr.last(args) === 'function' ? args.pop() : function (x) {
+            var args = Array.from(arguments), array = args.shift(), iterator = typeof arr.last(args) === 'function' ? args.pop() : function (x) {
                     return x;
-                }, collections = [array].concat(args).map(arr.from);
+                }, collections = [array].concat(args).map(function (ea) {
+                    return Array.from(ea);
+                });
             return array.map(function (value, index) {
                 return iterator(arr.pluck(collections, index), index);
             });
@@ -1445,7 +1410,9 @@
             return array.reduceRight(iterator, memo, context);
         },
         isArray: Array.isArray,
-        include: function (array, object) {
+        include: features.includes ? function (array, object) {
+            return array.includes(object);
+        } : function (array, object) {
             return array.indexOf(object) !== -1;
         },
         some: function (array, iterator, context) {
@@ -1554,8 +1521,7 @@
             return item;
         },
         pushAll: function (array, items) {
-            for (var i = 0; i < items.length; i++)
-                array.push(items[i]);
+            array.push.apply(array, items);
             return array;
         },
         pushAllAt: function (array, items, idx) {
@@ -1565,7 +1531,7 @@
             ].concat(items));
         },
         pushIfNotIncluded: function (array, item) {
-            if (!arr.include(array, item))
+            if (!array.includes(item))
                 array.push(item);
         },
         replaceAt: function (array, item, index) {
@@ -1972,6 +1938,24 @@
             }
         }
     };
+    if (!features.from)
+        Array.from = arr.from;
+    if (!features.filter)
+        Array.prototype.filter = function (it, ctx) {
+            return arr.filter(this, it, ctx);
+        };
+    if (!features.find)
+        Array.prototype.find = function (it, ctx) {
+            return arr.find(this, it, ctx);
+        };
+    if (!features.findIndex)
+        Array.prototype.findIndex = function (it, ctx) {
+            return arr.findIndex(this, it, ctx);
+        };
+    if (!features.includes)
+        Array.prototype.includes = function (x) {
+            return arr.include(this, x);
+        };
     var Group = exports.Group = function Group() {
     };
     Group.by = exports.arr.groupBy;
@@ -3342,6 +3326,12 @@
 
 ;
 (function (exports) {
+    var features = {
+        repeat: !!String.prototype.repeat,
+        includes: !!String.prototype.includes,
+        startsWith: !!String.prototype.startsWith,
+        endsWith: !!String.prototype.endsWith
+    };
     var string = exports.string = {
         format: function strings$format() {
             return string.formatFromArray(Array.prototype.slice.call(arguments));
@@ -3407,11 +3397,14 @@
         indent: function (str, indentString, depth) {
             if (!depth || depth <= 0)
                 return str;
+            var indent = '';
             while (depth > 0) {
                 depth--;
-                str = indentString + str;
+                indent += indentString;
             }
-            return str;
+            return string.lines(str).map(function (line) {
+                return indent + line;
+            }).join('\n');
         },
         removeSurroundingWhitespaces: function (str) {
             function removeTrailingWhitespace(s) {
@@ -3451,7 +3444,7 @@
             return s;
         },
         pad: function (string, n, left) {
-            return left ? ' '.times(n) + string : string + ' '.times(n);
+            return left ? ' '.repeat(n) + string : string + ' '.repeat(n);
         },
         printTable: function (tableArray, options) {
             var columnWidths = [], separator = options && options.separator || ' ', alignLeftAll = !options || !options.align || options.align === 'left', alignRightAll = options && options.align === 'right';
@@ -3482,7 +3475,7 @@
             iterator(0, 0, rootNode);
             return nodeList.join('\n');
             function iterator(depth, index, node) {
-                nodeList[index] = string.times(indent, depth) + nodePrinter(node, depth);
+                nodeList[index] = indent.repeat(depth) + nodePrinter(node, depth);
                 var children = childGetter(node, depth), childIndex = index + 1;
                 if (!children || !children.length)
                     return childIndex;
@@ -3909,22 +3902,23 @@
             return null;
         },
         lineIndexComputer: function (s) {
-            var lineRanges = string.lines(s).reduce(function (lineIndexes, line) {
-                var lastPos = lineIndexes.slice(-1)[0] || -1;
-                return lineIndexes.concat([
-                    lastPos + 1,
-                    lastPos + 1 + line.length
-                ]);
-            }, []);
+            var lineRanges = string.lineRanges(s);
             return function (pos) {
-                for (var line = 0; line < lineRanges.length; line += 2)
-                    if (pos >= lineRanges[line] && pos <= lineRanges[line + 1])
-                        return line / 2;
+                for (var line = 0; line < lineRanges.length; line++) {
+                    var lineRange = lineRanges[line];
+                    if (pos >= lineRange[0] && pos < lineRange[1])
+                        return line;
+                }
                 return -1;
             };
         },
         lineNumberToIndexesComputer: function (s) {
-            var lineRanges = string.lines(s).reduce(function (akk, line) {
+            return function (lineNo) {
+                return string.lineRanges(s)[lineNo];
+            };
+        },
+        lineRanges: function (s) {
+            return string.lines(s).reduce(function (akk, line) {
                 var start = akk.indexCount, end = akk.indexCount + line.length + 1;
                 akk.lineRanges.push([
                     start,
@@ -3936,9 +3930,6 @@
                 lineRanges: [],
                 indexCount: 0
             }).lineRanges;
-            return function (lineNo) {
-                return lineRanges[lineNo];
-            };
         },
         diff: function (s1, s2) {
             if (typeof JsDiff === 'undefined')
@@ -3948,17 +3939,23 @@
         empty: function (s) {
             return s == '';
         },
-        include: function (s, pattern) {
+        include: features.includes ? function (s, pattern) {
+            return s.includes(pattern);
+        } : function (s, pattern) {
             return s.indexOf(pattern) > -1;
         },
-        startsWith: function (s, pattern) {
+        startsWith: features.startsWith ? function (s, pattern) {
+            return s.startsWith(pattern);
+        } : function (s, pattern) {
             return s.indexOf(pattern) === 0;
         },
         startsWithVowel: function (s) {
             var c = s[0];
             return c === 'A' || c === 'E' || c === 'I' || c === 'O' || c === 'U' || c === 'a' || c === 'e' || c === 'i' || c === 'o' || c === 'u' || false;
         },
-        endsWith: function (s, pattern) {
+        endsWith: features.endsWith ? function (s, pattern) {
+            return s.endsWith(pattern);
+        } : function (s, pattern) {
             var d = s.length - pattern.length;
             return d >= 0 && s.lastIndexOf(pattern) === d;
         },
@@ -3995,7 +3992,9 @@
         digitValue: function (s) {
             return s.charCodeAt(0) - '0'.charCodeAt(0);
         },
-        times: function (s, count) {
+        times: features.repeat ? function (s, count) {
+            return s.repeat(count);
+        } : function (s, count) {
             return count < 1 ? '' : new Array(count + 1).join(s);
         },
         applyChange: function (string, change) {
@@ -4318,24 +4317,59 @@
     };
     obj.extend(exports.promise, {
         delay: function (ms, resolveVal) {
-            return new Promise(resolve => {
+            return new Promise(function (resolve) {
                 setTimeout(resolve, ms, resolveVal);
             });
         },
         delayReject: function (ms, rejectVal) {
-            return new Promise((_, reject) => {
+            return new Promise(function (_, reject) {
                 setTimeout(reject, ms, rejectVal);
             });
         },
         timeout: function (ms, promise) {
-            return new Promise((resolve, reject) => {
+            return new Promise(function (resolve, reject) {
                 var done = false;
-                setTimeout(() => !done && (done = true) && reject(new Error('Promise timed out')), ms);
-                promise.then(val => !done && (done = true) && resolve(val)).catch(err => !done && (done = true) && reject(err));
+                setTimeout(function () {
+                    return !done && (done = true) && reject(new Error('Promise timed out'));
+                }, ms);
+                promise.then(function (val) {
+                    return !done && (done = true) && resolve(val);
+                }, function (err) {
+                    return !done && (done = true) && reject(err);
+                });
+            });
+        },
+        waitFor: function (ms, tester) {
+            return new Promise(function (resolve, reject) {
+                if (typeof ms === 'function') {
+                    tester = ms;
+                    ms = undefined;
+                }
+                var stopped = false, error = null, value = undefined, i = setInterval(function () {
+                        if (stopped) {
+                            clearInterval(i);
+                            return;
+                        }
+                        try {
+                            value = tester();
+                        } catch (e) {
+                            error = e;
+                        }
+                        if (value || error) {
+                            stopped = true;
+                            clearInterval(i);
+                            error ? reject(error) : resolve(value);
+                        }
+                    }, 10);
+                if (typeof ms === 'number') {
+                    setTimeout(function () {
+                        error = new Error('timeout');
+                    }, ms);
+                }
             });
         },
         deferred: function () {
-            var resolve, reject, promise = new Promise((_resolve, _reject) => {
+            var resolve, reject, promise = new Promise(function (_resolve, _reject) {
                     resolve = _resolve;
                     reject = _reject;
                 });
@@ -4347,22 +4381,24 @@
         },
         convertCallbackFun: function (func) {
             return function promiseGenerator() {
-                var args = arr.from(arguments);
-                return new Promise((resolve, reject) => {
-                    args.push((err, result) => err ? reject(err) : resolve(result));
-                    func.apply(this, args);
+                var args = arr.from(arguments), self = this;
+                return new Promise(function (resolve, reject) {
+                    args.push(function (err, result) {
+                        return err ? reject(err) : resolve(result);
+                    });
+                    func.apply(self, args);
                 });
             };
         },
         convertCallbackFunWithManyArgs: function (func) {
             return function promiseGenerator() {
-                var args = arr.from(arguments);
-                return new Promise((resolve, reject) => {
+                var args = arr.from(arguments), self = this;
+                return new Promise(function (resolve, reject) {
                     args.push(function () {
                         var args = arr.from(arguments), err = args.shift();
                         return err ? reject(err) : resolve(args);
                     });
-                    func.apply(this, args);
+                    func.apply(self, args);
                 });
             };
         },
@@ -4372,16 +4408,18 @@
                 resolve(prevResult);
             else {
                 try {
-                    Promise.resolve(next(prevResult, akku)).then(result => {
+                    Promise.resolve(next(prevResult, akku)).then(function (result) {
                         resolveNext(promiseFuncs, result, akku, resolve, reject);
-                    }).catch(err => reject(err));
+                    }).catch(function (err) {
+                        reject(err);
+                    });
                 } catch (err) {
                     reject(err);
                 }
             }
         },
         chain: function (promiseFuncs) {
-            return new Promise((resolve, reject) => {
+            return new Promise(function (resolve, reject) {
                 exports.promise._chainResolveNext(promiseFuncs.slice(), undefined, {}, resolve, reject);
             });
         }
@@ -4490,8 +4528,8 @@
             return subgraph;
         },
         invert: function (g) {
-            return Object.keys(g).reduce((inverted, k) => {
-                g[k].forEach(k2 => {
+            return Object.keys(g).reduce(function (inverted, k) {
+                g[k].forEach(function (k2) {
                     if (!inverted[k2])
                         inverted[k2] = [k];
                     else
@@ -4503,12 +4541,16 @@
         sortByReference: function (depGraph, startNode) {
             var all = [startNode].concat(graph.hull(depGraph, startNode)), seen = [], groups = [];
             while (seen.length !== all.length) {
-                var depsRemaining = arr.withoutAll(all, seen).reduce((depsRemaining, node) => {
+                var depsRemaining = arr.withoutAll(all, seen).reduce(function (depsRemaining, node) {
                         depsRemaining[node] = arr.withoutAll(depGraph[node] || [], seen).length;
                         return depsRemaining;
-                    }, {}), min = arr.withoutAll(all, seen).reduce((minNode, node) => depsRemaining[node] <= depsRemaining[minNode] ? node : minNode);
+                    }, {}), min = arr.withoutAll(all, seen).reduce(function (minNode, node) {
+                        return depsRemaining[node] <= depsRemaining[minNode] ? node : minNode;
+                    });
                 if (depsRemaining[min] === 0) {
-                    groups.push(Object.keys(depsRemaining).filter(key => depsRemaining[key] === 0));
+                    groups.push(Object.keys(depsRemaining).filter(function (key) {
+                        return depsRemaining[key] === 0;
+                    }));
                 } else {
                     groups.push([min]);
                 }
@@ -4526,7 +4568,9 @@
                 carryOver = doFunc.call(context, carryOver, currentNode, index++);
                 visitedNodes = visitedNodes.concat([currentNode]);
                 var next = arr.withoutAll(graph[currentNode] || [], visitedNodes);
-                next.forEach(ea => iterator(ea));
+                next.forEach(function (ea) {
+                    return iterator(ea);
+                });
             }
         }
     };
@@ -5370,6 +5414,8 @@ var _tokentype = _dereq_("./tokentype");
 
 var _state = _dereq_("./state");
 
+var _parseutil = _dereq_("./parseutil");
+
 var pp = _state.Parser.prototype;
 
 // Check if property name clashes with already added.
@@ -5446,10 +5492,10 @@ pp.parseExpression = function (noIn, refDestructuringErrors) {
 pp.parseMaybeAssign = function (noIn, refDestructuringErrors, afterLeftParse) {
   if (this.inGenerator && this.isContextual("yield")) return this.parseYield();
 
-  var validateDestructuring = false;
+  var ownDestructuringErrors = false;
   if (!refDestructuringErrors) {
-    refDestructuringErrors = { shorthandAssign: 0, trailingComma: 0 };
-    validateDestructuring = true;
+    refDestructuringErrors = new _parseutil.DestructuringErrors();
+    ownDestructuringErrors = true;
   }
   var startPos = this.start,
       startLoc = this.startLoc;
@@ -5457,7 +5503,8 @@ pp.parseMaybeAssign = function (noIn, refDestructuringErrors, afterLeftParse) {
   var left = this.parseMaybeConditional(noIn, refDestructuringErrors);
   if (afterLeftParse) left = afterLeftParse.call(this, left, startPos, startLoc);
   if (this.type.isAssign) {
-    if (validateDestructuring) this.checkPatternErrors(refDestructuringErrors, true);
+    this.checkPatternErrors(refDestructuringErrors, true);
+    if (!ownDestructuringErrors) _parseutil.DestructuringErrors.call(refDestructuringErrors);
     var node = this.startNodeAt(startPos, startLoc);
     node.operator = this.value;
     node.left = this.type === _tokentype.types.eq ? this.toAssignable(left) : left;
@@ -5467,7 +5514,7 @@ pp.parseMaybeAssign = function (noIn, refDestructuringErrors, afterLeftParse) {
     node.right = this.parseMaybeAssign(noIn);
     return this.finishNode(node, "AssignmentExpression");
   } else {
-    if (validateDestructuring) this.checkExpressionErrors(refDestructuringErrors, true);
+    if (ownDestructuringErrors) this.checkExpressionErrors(refDestructuringErrors, true);
   }
   return left;
 };
@@ -5704,7 +5751,7 @@ pp.parseParenAndDistinguishExpression = function (canBeArrow) {
         innerStartLoc = this.startLoc;
     var exprList = [],
         first = true;
-    var refDestructuringErrors = { shorthandAssign: 0, trailingComma: 0 },
+    var refDestructuringErrors = new _parseutil.DestructuringErrors(),
         spreadStart = undefined,
         innerParenStart = undefined;
     while (this.type !== _tokentype.types.parenR) {
@@ -5872,9 +5919,9 @@ pp.parsePropertyValue = function (prop, isPattern, isGenerator, startPos, startL
     }
     if (prop.kind === "set" && prop.value.params[0].type === "RestElement") this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
   } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+    if (this.keywords.test(prop.key.name) || (this.strict ? this.reservedWordsStrictBind : this.reservedWords).test(prop.key.name) || this.inGenerator && prop.key.name == "yield") this.raiseRecoverable(prop.key.start, "'" + prop.key.name + "' can not be used as shorthand property");
     prop.kind = "init";
     if (isPattern) {
-      if (this.keywords.test(prop.key.name) || (this.strict ? this.reservedWordsStrictBind : this.reservedWords).test(prop.key.name) || this.inGenerator && prop.key.name == "yield") this.raiseRecoverable(prop.key.start, "Binding " + prop.key.name);
       prop.value = this.parseMaybeDefault(startPos, startLoc, prop.key);
     } else if (this.type === _tokentype.types.eq && refDestructuringErrors) {
       if (!refDestructuringErrors.shorthandAssign) refDestructuringErrors.shorthandAssign = this.start;
@@ -5992,14 +6039,16 @@ pp.parseExprList = function (close, allowTrailingComma, allowEmpty, refDestructu
   while (!this.eat(close)) {
     if (!first) {
       this.expect(_tokentype.types.comma);
-      if (this.type === close && refDestructuringErrors && !refDestructuringErrors.trailingComma) {
-        refDestructuringErrors.trailingComma = this.lastTokStart;
-      }
       if (allowTrailingComma && this.afterTrailingComma(close)) break;
     } else first = false;
 
     var elt = undefined;
-    if (allowEmpty && this.type === _tokentype.types.comma) elt = null;else if (this.type === _tokentype.types.ellipsis) elt = this.parseSpread(refDestructuringErrors);else elt = this.parseMaybeAssign(false, refDestructuringErrors);
+    if (allowEmpty && this.type === _tokentype.types.comma) elt = null;else if (this.type === _tokentype.types.ellipsis) {
+      elt = this.parseSpread(refDestructuringErrors);
+      if (this.type === _tokentype.types.comma && refDestructuringErrors && !refDestructuringErrors.trailingComma) {
+        refDestructuringErrors.trailingComma = this.lastTokStart;
+      }
+    } else elt = this.parseMaybeAssign(false, refDestructuringErrors);
     elts.push(elt);
   }
   return elts;
@@ -6040,7 +6089,7 @@ pp.parseYield = function () {
   return this.finishNode(node, "YieldExpression");
 };
 
-},{"./state":10,"./tokentype":14}],2:[function(_dereq_,module,exports){
+},{"./parseutil":9,"./state":10,"./tokentype":14}],2:[function(_dereq_,module,exports){
 // Reserved word lists for various dialects of the language
 
 "use strict";
@@ -6213,7 +6262,7 @@ var _whitespace = _dereq_("./whitespace");
 exports.isNewLine = _whitespace.isNewLine;
 exports.lineBreak = _whitespace.lineBreak;
 exports.lineBreakG = _whitespace.lineBreakG;
-var version = "3.0.4";
+var version = "3.1.0";
 
 exports.version = version;
 // The main exported interface (under `self.acorn` when in the
@@ -6479,6 +6528,7 @@ pp.parseBindingList = function (close, allowEmpty, allowTrailingComma, allowNonI
       var rest = this.parseRest(allowNonIdent);
       this.parseBindingListItem(rest);
       elts.push(rest);
+      if (this.type === _tokentype.types.comma) this.raise(this.start, "Comma is not permitted after the rest element");
       this.expect(close);
       break;
     } else {
@@ -6740,6 +6790,10 @@ function pushComment(options, array) {
 },{"./locutil":5,"./util":15}],9:[function(_dereq_,module,exports){
 "use strict";
 
+exports.__esModule = true;
+
+function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
+
 var _tokentype = _dereq_("./tokentype");
 
 var _state = _dereq_("./state");
@@ -6827,10 +6881,19 @@ pp.unexpected = function (pos) {
   this.raise(pos != null ? pos : this.start, "Unexpected token");
 };
 
+var DestructuringErrors = function DestructuringErrors() {
+  _classCallCheck(this, DestructuringErrors);
+
+  this.shorthandAssign = 0;
+  this.trailingComma = 0;
+};
+
+exports.DestructuringErrors = DestructuringErrors;
+
 pp.checkPatternErrors = function (refDestructuringErrors, andThrow) {
-  var pos = refDestructuringErrors && refDestructuringErrors.trailingComma;
-  if (!andThrow) return !!pos;
-  if (pos) this.raise(pos, "Trailing comma is not permitted in destructuring patterns");
+  var trailing = refDestructuringErrors && refDestructuringErrors.trailingComma;
+  if (!andThrow) return !!trailing;
+  if (trailing) this.raise(trailing, "Comma is not permitted after the rest element");
 };
 
 pp.checkExpressionErrors = function (refDestructuringErrors, andThrow) {
@@ -6975,6 +7038,8 @@ var _state = _dereq_("./state");
 var _whitespace = _dereq_("./whitespace");
 
 var _identifier = _dereq_("./identifier");
+
+var _parseutil = _dereq_("./parseutil");
 
 var pp = _state.Parser.prototype;
 
@@ -7160,7 +7225,7 @@ pp.parseForStatement = function (node) {
     if ((this.type === _tokentype.types._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && _init.declarations.length === 1 && !(kind !== "var" && _init.declarations[0].init)) return this.parseForIn(node, _init);
     return this.parseFor(node, _init);
   }
-  var refDestructuringErrors = { shorthandAssign: 0, trailingComma: 0 };
+  var refDestructuringErrors = new _parseutil.DestructuringErrors();
   var init = this.parseExpression(true, refDestructuringErrors);
   if (this.type === _tokentype.types._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) {
     this.checkPatternErrors(refDestructuringErrors, true);
@@ -7628,7 +7693,7 @@ pp.parseImportSpecifiers = function () {
   return nodes;
 };
 
-},{"./identifier":2,"./state":10,"./tokentype":14,"./whitespace":16}],12:[function(_dereq_,module,exports){
+},{"./identifier":2,"./parseutil":9,"./state":10,"./tokentype":14,"./whitespace":16}],12:[function(_dereq_,module,exports){
 // The algorithm used to determine whether a regexp can appear at a
 // given point in the program is loosely based on sweet.js' approach.
 // See https://github.com/mozilla/sweet.js/wiki/design
@@ -7729,8 +7794,8 @@ _tokentype.types.incDec.updateContext = function () {
   // tokExprAllowed stays unchanged
 };
 
-_tokentype.types._function.updateContext = function () {
-  if (this.curContext() !== types.b_stat) this.context.push(types.f_expr);
+_tokentype.types._function.updateContext = function (prevType) {
+  if (prevType.beforeExpr && prevType !== _tokentype.types.semi && prevType !== _tokentype.types._else && (prevType !== _tokentype.types.colon || this.curContext() !== types.b_stat)) this.context.push(types.f_expr);
   this.exprAllowed = false;
 };
 
@@ -8200,26 +8265,32 @@ pp.readRegexp = function () {
   // Need to use `readWord1` because '\uXXXX' sequences are allowed
   // here (don't ask).
   var mods = this.readWord1();
-  var tmp = content;
+  var tmp = content,
+      tmpFlags = "";
   if (mods) {
     var validFlags = /^[gim]*$/;
     if (this.options.ecmaVersion >= 6) validFlags = /^[gimuy]*$/;
     if (!validFlags.test(mods)) this.raise(start, "Invalid regular expression flag");
-    if (mods.indexOf('u') >= 0 && !regexpUnicodeSupport) {
-      // Replace each astral symbol and every Unicode escape sequence that
-      // possibly represents an astral symbol or a paired surrogate with a
-      // single ASCII symbol to avoid throwing on regular expressions that
-      // are only valid in combination with the `/u` flag.
-      // Note: replacing with the ASCII symbol `x` might cause false
-      // negatives in unlikely scenarios. For example, `[\u{61}-b]` is a
-      // perfectly valid pattern that is equivalent to `[a-b]`, but it would
-      // be replaced by `[x-b]` which throws an error.
-      tmp = tmp.replace(/\\u\{([0-9a-fA-F]+)\}/g, function (_match, code, offset) {
-        code = Number("0x" + code);
-        if (code > 0x10FFFF) _this.raise(start + offset + 3, "Code point out of bounds");
-        return "x";
-      });
-      tmp = tmp.replace(/\\u([a-fA-F0-9]{4})|[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "x");
+    if (mods.indexOf("u") >= 0) {
+      if (regexpUnicodeSupport) {
+        tmpFlags = "u";
+      } else {
+        // Replace each astral symbol and every Unicode escape sequence that
+        // possibly represents an astral symbol or a paired surrogate with a
+        // single ASCII symbol to avoid throwing on regular expressions that
+        // are only valid in combination with the `/u` flag.
+        // Note: replacing with the ASCII symbol `x` might cause false
+        // negatives in unlikely scenarios. For example, `[\u{61}-b]` is a
+        // perfectly valid pattern that is equivalent to `[a-b]`, but it would
+        // be replaced by `[x-b]` which throws an error.
+        tmp = tmp.replace(/\\u\{([0-9a-fA-F]+)\}/g, function (_match, code, offset) {
+          code = Number("0x" + code);
+          if (code > 0x10FFFF) _this.raise(start + offset + 3, "Code point out of bounds");
+          return "x";
+        });
+        tmp = tmp.replace(/\\u([a-fA-F0-9]{4})|[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "x");
+        tmpFlags = tmpFlags.replace("u", "");
+      }
     }
   }
   // Detect invalid regular expressions.
@@ -8227,7 +8298,7 @@ pp.readRegexp = function () {
   // Rhino's regular expression parser is flaky and throws uncatchable exceptions,
   // so don't do detection if we are running under Rhino
   if (!isRhino) {
-    tryCreateRegexp(tmp, undefined, start, this);
+    tryCreateRegexp(tmp, tmpFlags, start, this);
     // Get a regular expression object for this pattern-flag pair, or `null` in
     // case the current environment doesn't support the flags it uses.
     value = tryCreateRegexp(content, mods);
@@ -8744,20 +8815,20 @@ function simple(node, visitors, base, state, override) {
   })(node, state, override);
 }
 
-// An ancestor walk builds up an array of ancestor nodes (including
-// the current node) and passes them to the callback as the state parameter.
+// An ancestor walk keeps an array of ancestor nodes (including the
+// current node) and passes them to the callback as third parameter
+// (and also as state parameter when no other state is present).
 
 function ancestor(node, visitors, base, state) {
   if (!base) base = exports.base;
-  if (!state) state = [];(function c(node, st, override) {
+  var ancestors = [];(function c(node, st, override) {
     var type = override || node.type,
         found = visitors[type];
-    if (node != st[st.length - 1]) {
-      st = st.slice();
-      st.push(node);
-    }
+    var isNew = node != ancestors[ancestors.length - 1];
+    if (isNew) ancestors.push(node);
     base[type](node, st, c);
-    if (found) found(node, st);
+    if (found) found(node, st || ancestors, ancestors);
+    if (isNew) ancestors.pop();
   })(node, state);
 }
 
@@ -8858,13 +8929,19 @@ function findNodeBefore(node, pos, test, base, state) {
   return max;
 }
 
+// Fallback to an Object.create polyfill for older environments.
+var create = Object.create || function (proto) {
+  function Ctor() {}
+  Ctor.prototype = proto;
+  return new Ctor();
+};
+
 // Used to create a custom walker. Will fill in all missing node
 // type properties with the defaults.
 
 function make(funcs, base) {
   if (!base) base = exports.base;
-  var visitor = {};
-  for (var type in base) visitor[type] = base[type];
+  var visitor = create(base);
   for (var type in funcs) visitor[type] = funcs[type];
   return visitor;
 }
@@ -8920,11 +8997,12 @@ base.ThrowStatement = base.SpreadElement = function (node, st, c) {
 };
 base.TryStatement = function (node, st, c) {
   c(node.block, st, "Statement");
-  if (node.handler) {
-    c(node.handler.param, st, "Pattern");
-    c(node.handler.body, st, "ScopeBody");
-  }
+  if (node.handler) c(node.handler, st);
   if (node.finalizer) c(node.finalizer, st, "Statement");
+};
+base.CatchClause = function (node, st, c) {
+  c(node.param, st, "Pattern");
+  c(node.body, st, "ScopeBody");
 };
 base.WhileStatement = base.DoWhileStatement = function (node, st, c) {
   c(node.test, st, "Expression");
@@ -9406,6 +9484,7 @@ lp.parseTemplate = function () {
       curElt = this.startNode();
       curElt.value = { cooked: '', raw: '' };
       curElt.tail = true;
+      this.finishNode(curElt, "TemplateElement");
     }
     node.quasis.push(curElt);
   }
@@ -9696,7 +9775,9 @@ var pluginsLoose = {};
 exports.pluginsLoose = pluginsLoose;
 
 var LooseParser = (function () {
-  function LooseParser(input, options) {
+  function LooseParser(input) {
+    var options = arguments.length <= 1 || arguments[1] === undefined ? {} : arguments[1];
+
     _classCallCheck(this, LooseParser);
 
     this.toks = _.tokenizer(input, options);
@@ -10175,7 +10256,7 @@ lp.parseExport = function () {
   var node = this.startNode();
   this.next();
   if (this.eat(_.tokTypes.star)) {
-    node.source = this.eatContextual("from") ? this.parseExprAtom() : null;
+    node.source = this.eatContextual("from") ? this.parseExprAtom() : this.dummyString();
     return this.finishNode(node, "ExportAllDeclaration");
   }
   if (this.eat(_.tokTypes._default)) {
@@ -10233,7 +10314,7 @@ lp.parseImportSpecifierList = function () {
   if (this.tok.type === _.tokTypes.star) {
     var elt = this.startNode();
     this.next();
-    if (this.eatContextual("as")) elt.local = this.parseIdent();
+    elt.local = this.eatContextual("as") ? this.parseIdent() : this.dummyIdent();
     elts.push(this.finishNode(elt, "ImportNamespaceSpecifier"));
   } else {
     var indent = this.curIndent,
@@ -10399,7 +10480,19 @@ lp.lookAhead = function (n) {
 var asyncExit = /^async[\t ]+(return|throw)/ ;
 var asyncFunction = /^async[\t ]+function/ ;
 var atomOrPropertyOrLabel = /^\s*[):;]/ ;
-var asyncAtEndOfLine = /^async[\t ]*\n/ ;
+var removeComments = /([^\n])\/\*(\*(?!\/)|[^\n*])*\*\/([^\n])/g ;
+
+function hasLineTerminatorBeforeNext(st, since) {
+	return st.lineStart >= since;
+}
+
+function test(regex,st,noComment) {
+	var src = st.input.slice(st.start) ;
+	if (noComment) {
+		src = src.replace(removeComments,"$1 $3") ;
+  }
+	return regex.test(src);
+}
 
 /* Return the object holding the parser's 'State'. This is different between acorn ('this')
  * and babylon ('this.state') */
@@ -10445,39 +10538,43 @@ function asyncAwaitPlugin (parser,options){
       this.reservedWords = new RegExp(this.reservedWords.toString().replace(/await|async/g,"").replace("|/","/").replace("/|","/").replace("||","|")) ;
       this.reservedWordsStrict = new RegExp(this.reservedWordsStrict.toString().replace(/await|async/g,"").replace("|/","/").replace("/|","/").replace("||","|")) ;
       this.reservedWordsStrictBind = new RegExp(this.reservedWordsStrictBind.toString().replace(/await|async/g,"").replace("|/","/").replace("/|","/").replace("||","|")) ;
+			this.inAsyncFunction = options.inAsyncFunction ;
+			if (options.awaitAnywhere && options.inAsyncFunction)
+				parser.raise(node.start,"The options awaitAnywhere and inAsyncFunction are mutually exclusive") ;
+
 			return base.apply(this,arguments);
 		}
 	}) ;
 
 	parser.extend("shouldParseExportStatement",function(base){
 	    return function(){
-	        if (this.type.label==='name' && this.value==='async' && asyncFunction.test(this.input.substr(this.start))) {
+	        if (this.type.label==='name' && this.value==='async' && test(asyncFunction,state(this))) {
 	            return true ;
 	        }
 	        return base.apply(this,arguments) ;
 	    }
 	}) ;
-	
+
 	parser.extend("parseStatement",function(base){
 		return function (declaration, topLevel) {
 			var st = state(this) ;
 			var start = st.start;
 			var startLoc = st.startLoc;
 			if (st.type.label==='name') {
-				if (asyncFunction.test(st.input.slice(st.start))) {
+				if (test(asyncFunction,st,true)) {
 					var wasAsync = st.inAsyncFunction ;
 					try {
 						st.inAsyncFunction = true ;
 						this.next() ;
 						var r = this.parseStatement(declaration, topLevel) ;
-						r.async = true ;
+ 						r.async = true ;
 						r.start = start;
 						r.loc && (r.loc.start = startLoc);
 						return r ;
 					} finally {
 						st.inAsyncFunction = wasAsync ;
 					}
-				} else if ((typeof options==="object" && options.asyncExits) && asyncExit.test(st.input.slice(st.start))) {
+				} else if ((typeof options==="object" && options.asyncExits) && test(asyncExit,st)) {
 					// NON-STANDARD EXTENSION iff. options.asyncExits is set, the
 					// extensions 'async return <expr>?' and 'async throw <expr>?'
 					// are enabled. In each case they are the standard ESTree nodes
@@ -10514,7 +10611,7 @@ function asyncAwaitPlugin (parser,options){
 			var startLoc = st.startLoc;
 			var rhs,r = base.apply(this,arguments);
 			if (r.type==='Identifier') {
-				if (r.name==='async' && !asyncAtEndOfLine.test(st.input.slice(start))) {
+				if (r.name==='async' && !hasLineTerminatorBeforeNext(st, r.end)) {
 					// Is this really an async function?
 					var isAsync = st.inAsyncFunction ;
 					try {
@@ -10623,7 +10720,7 @@ function asyncAwaitPlugin (parser,options){
 		return function (prop) {
 			var st = state(this) ;
 			var key = base.apply(this,arguments) ;
-			if (key.type === "Identifier" && key.name === "async") {
+			if (key.type === "Identifier" && key.name === "async" && !hasLineTerminatorBeforeNext(st, key.end)) {
 				// Look-ahead to see if this is really a property or label called async or await
 				if (!st.input.slice(key.end).match(atomOrPropertyOrLabel)){
 					es7check(prop) ;
@@ -19041,8 +19138,8 @@ var nodes = Object.freeze({
         target: decl,
         replacementFunc: function replacementFunc(declNode, s, wasChanged) {
           if (wasChanged) {
-            var scopes = scopes(parse(s, { addSource: true }));
-            declNode = scopes.varDecls[0];
+            var _scopes = scopes(parse(s, { addSource: true }));
+            declNode = _scopes.varDecls[0];
           }
 
           return declNode.declarations.map(function (ea) {
